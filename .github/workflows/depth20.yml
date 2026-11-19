@@ -1,0 +1,70 @@
+# Depth experiment: the same games analysed at depth 12 and depth 20, to see whether a deeper reference engine separates cheaters better.
+# Lives in its own repo so it uses its own free GitHub Actions minutes, separate from the main collection in leeo-collect.
+# Chained: each job runs about 5.5 hours, saves its numbers to the `depth20` branch, then starts the next one,
+# until the target is reached, a STOP file appears on that branch, or two runs in a row find nothing new.
+name: Depth experiment 20
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: depth20
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Load earlier progress
+        run: |
+          git config user.name collect-bot && git config user.email collect-bot@users.noreply.github.com
+          if git ls-remote --exit-code --heads origin depth20 >/dev/null 2>&1; then git fetch -q origin depth20 && git worktree add -q data FETCH_HEAD; else git worktree add -q --orphan -b depth20 data; fi
+          [ -f data/STOP ] && echo "STOP file found" && echo "stop=1" >> "$GITHUB_ENV" || true
+      - name: Install
+        if: env.stop != '1'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq stockfish
+          npm install --omit=dev --no-audit --no-fund
+      - name: Collect
+        id: collect
+        if: env.stop != '1'
+        timeout-minutes: 340
+        continue-on-error: true
+        env:
+          STOCKFISH_CMD: /usr/games/stockfish
+          THREADS: "4"
+          DEPTH: "12"
+          DEPTH2: "20"
+          GAMES: "30"
+          TARGET_BANNED: "50"
+          TARGET_CLEAN: "50"
+          RUN_ID: ${{ github.run_id }}
+          PUSH_BRANCH: depth20
+          MAX_MINUTES: "330"
+        run: node collect.mjs
+      - name: Save to data branch
+        if: always() && env.stop != '1'
+        run: |
+          cd data && git add -A && { git commit -q -m "run ${{ github.run_id }}" && git push -q origin HEAD:depth20 || true; }
+      - name: Start the next run
+        if: always() && env.stop != '1' && steps.collect.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          WF: ${{ github.workflow }}
+        run: |
+          S=data/status.json
+          if [ -f "$S" ] && { grep -q '"done":true' "$S" || node -e 'process.exit(JSON.parse(require("fs").readFileSync("data/status.json","utf8")).emptyRuns>=2?0:1)'; }; then echo "finished, not continuing"; cat "$S"; [ -n "$NTFY_TOPIC" ] && curl -s -d "$WF finished: $(cat $S)" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null || true; exit 0; fi
+          gh workflow run depth20.yml -R "$GITHUB_REPOSITORY"
+      - name: Report why it stopped, if it did
+        if: always() && env.stop != '1' && steps.collect.outcome != 'success'
+        run: echo "the Collect step did not succeed (outcome: ${{ steps.collect.outcome }}), so the chain stopped here rather than silently failing forever. Check this job's log before re-running."

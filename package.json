@@ -1,0 +1,7 @@
+{
+  "name": "leeo-depth20",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": { "chess.js": "^1.4.0" }
+}
